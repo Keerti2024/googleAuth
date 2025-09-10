@@ -14,8 +14,8 @@ class SocialAuthController extends Controller
 {
     public function redirect($provider)
     {
-        // Only allow google for now — you can extend
-        if (!in_array($provider, ['google'])) {
+        // Allow both google and linkedin
+        if (!in_array($provider, ['google', 'linkedin'])) {
             abort(404);
         }
 
@@ -27,7 +27,7 @@ class SocialAuthController extends Controller
     public function callback($provider)
     {
         try {
-            logger()->info('Google callback reached');
+            logger()->info("{$provider} callback reached");
 
             // Temporarily disable SSL verification for development
             $guzzleConfig = [
@@ -42,36 +42,43 @@ class SocialAuthController extends Controller
                 ->setHttpClient(new \GuzzleHttp\Client($guzzleConfig))
                 ->user();
 
-            logger()->info('Google user data', [
+            logger()->info("{$provider} user data", [
                 'email' => $socialUser->getEmail(),
                 'name' => $socialUser->getName(),
                 'id' => $socialUser->getId(),
             ]);
 
+            // Prepare user data based on provider
+            $userData = [
+                'name' => $socialUser->getName() ?? $socialUser->getNickname(),
+                'avatar' => $socialUser->getAvatar(),
+                'password' => bcrypt($provider . '_oauth_' . $socialUser->getId()),
+            ];
+
+            // Add provider-specific ID
+            if ($provider === 'google') {
+                $userData['google_id'] = $socialUser->getId();
+            } elseif ($provider === 'linkedin') {
+                $userData['linkedin_id'] = $socialUser->getId();
+            }
+
             $user = User::updateOrCreate(
                 ['email' => $socialUser->getEmail()],
-                [
-                    'name' => $socialUser->getName() ?? $socialUser->getNickname(),
-                    'google_id' => $socialUser->getId(),
-                    'avatar' => $socialUser->getAvatar(),
-                    'password' => bcrypt('google_oauth_' . $socialUser->getId()), // Generate password for Google users
-                ]
+                $userData
             );
 
-            logger()->info('User created/updated', ['user_id' => $user->id, 'email' => $user->email]);
+            logger()->info('User created/updated', ['user_id' => $user->id, 'email' => $user->email, 'provider' => $provider]);
 
             // create personal access token (Sanctum)
             $token = $user->createToken('authToken')->plainTextToken;
-
 
             // Redirect to React app with token in query string
             $reactUrl = config('app.react_url', 'http://localhost:3000');
             return redirect("{$reactUrl}/auth/callback?token={$token}");
 
-
         } catch (\Exception $e) {
             // Log and handle
-            logger()->error('Social callback error', ['err' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
+            logger()->error('Social callback error', ['provider' => $provider, 'err' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
             return redirect('/')->with('error', 'Login failed');
         }
     }
